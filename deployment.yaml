@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flask-stig-demo
+  labels:
+    app: flask-stig-demo
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: flask-stig-demo
+  template:
+    metadata:
+      labels:
+        app: flask-stig-demo
+    spec:
+      containers:
+      - name: flask-stig-demo
+        # This placeholder will be dynamically replaced by GitHub Actions
+        image: GKE_IMAGE_TAG
+        ports:
+        - containerPort: 8080
+        env:
+        - name: APP_VERSION
+          value: "1.0" # This will be updated for version bumps
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flask-stig-service
+  labels:
+    app: flask-stig-demo
+spec:
+  # Use LoadBalancer to expose the application publicly
+  type: LoadBalancer
+  selector:
+    app: flask-stig-demo
+  ports:
+  - protocol: TCP
+    # Port exposed by the Load Balancer
+    port: 80
+    # Port the container is listening on (matching app.py EXPOSE 8080)
+    targetPort: 8080
