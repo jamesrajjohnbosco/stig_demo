@@ -1,0 +1,104 @@
+name: GKE Deployment Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+# Define permissions required for Workload Identity Federation (WIF)
+permissions:
+  contents: 'read'
+  id-token: 'write' # Required for secure GCP authentication via OIDC
+
+env:
+  # Referencing the names used in your k8s manifest and GCP setup
+  ARTIFACT_REPO: app-images
+  IMAGE_NAME: flask-stig-demo
+  K8S_DEPLOYMENT_FILE: k8s/deployment.yaml
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # --- 1. AUTHENTICATION & SETUP ---
+      # This step uses the WIF secrets you configured in the previous step (Phase 2)
+      - name: Authenticate to Google Cloud (using WIF)
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up GCloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+          # The location is typically used for Artifact Registry setup
+          
+      # --- 2. SECURITY (STIG Compliance Demo) ---
+      - name: 🛡️ STIG Compliance Check (Conceptual Demo)
+        id: security_check
+        run: |
+          echo "--- Running Simulated STIG/CIS Compliance Scan ---"
+          # This is the point where a compliance tool (like Checkov, OPA, or a vendor tool) 
+          # would analyze your k8s/deployment.yaml for STIG violations.
+          echo "Simulating check passed."
+          echo "status=PASSED" >> $GITHUB_OUTPUT
+        shell: bash
+
+      - name: Fail if STIG Compliance Check Failed
+        if: steps.security_check.outputs.status != 'PASSED'
+        run: |
+          echo "Security compliance check failed. Deployment blocked."
+          exit 1
+      
+      # --- 3. BUILD & PUSH CONTAINER IMAGE ---
+      - name: Build and Push Docker Image to Artifact Registry
+        run: |
+          # 1. Define full image path using the Artifact Registry (GAR) format
+          # We use the GKE_ZONE secret to infer the AR region (assuming they are the same)
+          AR_LOCATION=${{ secrets.GKE_ZONE }}
+          IMAGE_URI="${AR_LOCATION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}"
+          TAGGED_IMAGE_URI="${IMAGE_URI}:${{ env.IMAGE_TAG }}"
+
+          # 2. Configure Docker to use gcloud credentials (needed to push to AR)
+          gcloud auth configure-docker "${AR_LOCATION}-docker.pkg.dev" --quiet
+
+          # 3. Build the image (using Dockerfile in root)
+          docker build -t $TAGGED_IMAGE_URI .
+
+          # 4. Push the image to Artifact Registry
+          docker push $TAGGED_IMAGE_URI
+        shell: bash
+
+      # --- 4. DEPLOY TO GKE ---
+      - name: Set up Kubectl and Get GKE Credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ secrets.GKE_CLUSTER }}
+          location: ${{ secrets.GKE_ZONE }}
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+      
+      - name: Deploy to GKE
+        run: |
+          # 1. Re-define the AR location and full image tag
+          AR_LOCATION=${{ secrets.GKE_ZONE }}
+          FULL_IMAGE_TAG="${AR_LOCATION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
+          
+          # 2. Substitute the GKE_IMAGE_TAG placeholder with the actual, built image URI
+          # The sed command requires the use of a safe delimiter like @ because the variable contains slashes
+          sed -i "s@GKE_IMAGE_TAG@${FULL_IMAGE_TAG}@g" ${{ env.K8S_DEPLOYMENT_FILE }}
+          sed -i "s@value: \"1.0\"@value: \"${{ env.IMAGE_TAG }}\"@g" ${{ env.K8S_DEPLOYMENT_FILE }}
+
+          # 3. Apply the updated Kubernetes manifest to the GKE cluster
+          kubectl apply -f ${{ env.K8S_DEPLOYMENT_FILE }}
+
+      - name: Verify Deployment Rollout
+        run: |
+          # Wait for the Kubernetes deployment to successfully update
+          kubectl rollout status deployment/flask-stig-demo --timeout=5m
