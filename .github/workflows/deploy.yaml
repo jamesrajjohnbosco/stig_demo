@@ -6,9 +6,9 @@ on:
       - main
 
 # Define permissions required for Workload Identity Federation (WIF)
+# NOTE: Removed 'id-token: write' as we are temporarily disabling WIF.
 permissions:
   contents: 'read'
-  id-token: 'write' # Grants permission to request the OIDC token for WIF
 
 env:
   # Constants (referencing the Artifact Registry setup)
@@ -25,18 +25,13 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # --- 1. AUTHENTICATION (WIF with Fallback) ---
-      # This uses WIF first, and falls back to a Service Account Key Secret 
-      # named 'GCP_CREDENTIALS' if WIF fails.
+      # --- 1. AUTHENTICATION (Using Service Account Key Fallback Only) ---
+      # TEMPORARILY DISABLED WIF to resolve the conflict error.
+      # This step now relies solely on the GitHub Secret named 'GCP_CREDENTIALS'.
       - id: 'auth'
         uses: 'google-github-actions/auth@v2'
         with:
-          # PRIMARY: Workload Identity Federation (Keyless, Secure)
-          # NOTE: I am using the explicit values you provided here.
-          workload_identity_provider: 'projects/1089142440134/locations/global/workloadIdentityPools/github-pool/providers/github-provider'
-          service_account: 'github-actions-deployer@kinaxis-gcp-foundation.iam.gserviceaccount.com'
-          
-          # FALLBACK: Service Account Key File (Requires creating a GitHub Secret named GCP_CREDENTIALS)
+          # Use the Service Account Key File (Requires creating a GitHub Secret named GCP_CREDENTIALS)
           credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
 
       # --- 2. Setup gcloud SDK ---
