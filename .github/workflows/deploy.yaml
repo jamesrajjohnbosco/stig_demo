@@ -15,8 +15,9 @@ env:
   IMAGE_NAME: flask-stig-demo
   K8S_DEPLOYMENT_FILE: k8s/deployment.yaml
   IMAGE_TAG: ${{ github.sha }}
-  # Define the REGISTRY_LOCATION using the GKE_ZONE secret
-  REGISTRY_LOCATION: ${{ secrets.GKE_ZONE }}
+  # Define the REGISTRY_REGION using a secret (must be the region name, e.g., 'us-central1')
+  REGISTRY_REGION: ${{ secrets.AR_REGION }} # <-- NEW Secret: AR_REGION
+  GKE_LOCATION: ${{ secrets.GKE_ZONE }}     # <-- Renamed variable for clarity (still uses GKE_ZONE secret)
 
 jobs:
   build-and-deploy:
@@ -34,7 +35,6 @@ jobs:
           credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
 
       # --- 2. Setup gcloud SDK ---
-      # This sets PROJECT_ID as a global variable accessible by all subsequent steps
       - name: Set up GCloud SDK
         uses: google-github-actions/setup-gcloud@v2
         with:
@@ -58,22 +58,19 @@ jobs:
       # --- 4. BUILD & PUSH CONTAINER IMAGE (Consolidated Logic) ---
       - name: Build and Push Docker Image to Artifact Registry
         run: |
-          # Define full URI using the explicit location defined in env
-          IMAGE_URI="${{ env.REGISTRY_LOCATION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}"
+          # Define full URI using the explicit region.
+          IMAGE_URI="${{ env.REGISTRY_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}"
           TAGGED_IMAGE_URI="${IMAGE_URI}:${{ env.IMAGE_TAG }}"
 
-          echo "Authenticating Docker for registry: ${{ env.REGISTRY_LOCATION }}-docker.pkg.dev"
+          echo "Authenticating Docker for registry: ${{ env.REGISTRY_REGION }}-docker.pkg.dev"
           
           # Configure Docker to use gcloud credentials (needed to push to AR)
-          # NOTE: Using the REGISTRY_LOCATION env variable defined above
-          gcloud auth configure-docker "${{ env.REGISTRY_LOCATION }}-docker.pkg.dev" --quiet
+          gcloud auth configure-docker "${{ env.REGISTRY_REGION }}-docker.pkg.dev" --quiet
 
           echo "Building image: ${TAGGED_IMAGE_URI}"
-          # Build the image (using Dockerfile in root)
           docker build -t $TAGGED_IMAGE_URI .
 
           echo "Pushing image..."
-          # Push the image to Artifact Registry
           docker push $TAGGED_IMAGE_URI
         shell: bash
 
@@ -82,13 +79,13 @@ jobs:
         uses: google-github-actions/get-gke-credentials@v2
         with:
           cluster_name: ${{ secrets.GKE_CLUSTER }}
-          location: ${{ secrets.GKE_ZONE }}
+          location: ${{ secrets.GKE_ZONE }} # Use the zone for GKE connection
           project_id: ${{ secrets.GCP_PROJECT_ID }}
       
       - name: Deploy to GKE
         run: |
-          # Define the full image tag for manifest replacement
-          FULL_IMAGE_TAG="${{ env.REGISTRY_LOCATION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
+          # Define the full image tag for manifest replacement using the REGISTRY_REGION
+          FULL_IMAGE_TAG="${{ env.REGISTRY_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
           
           # Substitute the GKE_IMAGE_TAG placeholder in the manifest
           sed -i "s@GKE_IMAGE_TAG@${FULL_IMAGE_TAG}@g" ${{ env.K8S_DEPLOYMENT_FILE }}
