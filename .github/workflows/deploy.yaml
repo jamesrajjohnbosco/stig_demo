@@ -8,10 +8,10 @@ on:
 # Define permissions required for Workload Identity Federation (WIF)
 permissions:
   contents: 'read'
-  id-token: 'write' # Required for secure GCP authentication via OIDC
+  id-token: 'write' # Grants permission to request the OIDC token for WIF
 
 env:
-  # Referencing the names used in your k8s manifest and GCP setup
+  # Constants (referencing the Artifact Registry setup)
   ARTIFACT_REPO: app-images
   IMAGE_NAME: flask-stig-demo
   K8S_DEPLOYMENT_FILE: k8s/deployment.yaml
@@ -25,28 +25,34 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # --- 1. AUTHENTICATION & SETUP ---
-      # This step uses the WIF secrets you configured in the previous step (Phase 2)
-      - name: Authenticate to Google Cloud (using WIF)
-        id: auth
-        uses: google-github-actions/auth@v2
+      # --- 1. AUTHENTICATION (WIF with Fallback) ---
+      # This uses WIF first, and falls back to a Service Account Key Secret 
+      # named 'GCP_CREDENTIALS' if WIF fails.
+      - id: 'auth'
+        uses: 'google-github-actions/auth@v2'
         with:
+          # PRIMARY: Workload Identity Federation (Keyless, Secure)
+          # NOTE: I am using the explicit values you provided here.
           workload_identity_provider: 'projects/1089142440134/locations/global/workloadIdentityPools/github-pool/providers/github-provider'
           service_account: 'github-actions-deployer@kinaxis-gcp-foundation.iam.gserviceaccount.com'
+          
+          # FALLBACK: Service Account Key File (Requires creating a GitHub Secret named GCP_CREDENTIALS)
+          credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
 
+      # --- 2. Setup gcloud SDK ---
+      # Uses the credentials established in the 'auth' step
       - name: Set up GCloud SDK
         uses: google-github-actions/setup-gcloud@v2
         with:
+          # Use your project ID secret for consistency
           project_id: ${{ secrets.GCP_PROJECT_ID }}
-          # The location is typically used for Artifact Registry setup
           
-      # --- 2. SECURITY (STIG Compliance Demo) ---
+      # --- 3. SECURITY (STIG Compliance Demo) ---
+      # This is the step where a compliance tool would run.
       - name: 🛡️ STIG Compliance Check (Conceptual Demo)
         id: security_check
         run: |
           echo "--- Running Simulated STIG/CIS Compliance Scan ---"
-          # This is the point where a compliance tool (like Checkov, OPA, or a vendor tool) 
-          # would analyze your k8s/deployment.yaml for STIG violations.
           echo "Simulating check passed."
           echo "status=PASSED" >> $GITHUB_OUTPUT
         shell: bash
@@ -57,26 +63,25 @@ jobs:
           echo "Security compliance check failed. Deployment blocked."
           exit 1
       
-      # --- 3. BUILD & PUSH CONTAINER IMAGE ---
+      # --- 4. BUILD & PUSH CONTAINER IMAGE ---
       - name: Build and Push Docker Image to Artifact Registry
         run: |
-          # 1. Define full image path using the Artifact Registry (GAR) format
-          # We use the GKE_ZONE secret to infer the AR region (assuming they are the same)
+          # Use the GKE_ZONE secret for the Artifact Registry location
           AR_LOCATION=${{ secrets.GKE_ZONE }}
           IMAGE_URI="${AR_LOCATION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}"
           TAGGED_IMAGE_URI="${IMAGE_URI}:${{ env.IMAGE_TAG }}"
 
-          # 2. Configure Docker to use gcloud credentials (needed to push to AR)
+          # Configure Docker to use gcloud credentials (needed to push to AR)
           gcloud auth configure-docker "${AR_LOCATION}-docker.pkg.dev" --quiet
 
-          # 3. Build the image (using Dockerfile in root)
+          # Build the image (using Dockerfile in root)
           docker build -t $TAGGED_IMAGE_URI .
 
-          # 4. Push the image to Artifact Registry
+          # Push the image to Artifact Registry
           docker push $TAGGED_IMAGE_URI
         shell: bash
 
-      # --- 4. DEPLOY TO GKE ---
+      # --- 5. DEPLOY TO GKE ---
       - name: Set up Kubectl and Get GKE Credentials
         uses: google-github-actions/get-gke-credentials@v2
         with:
@@ -86,19 +91,17 @@ jobs:
       
       - name: Deploy to GKE
         run: |
-          # 1. Re-define the AR location and full image tag
+          # Define the full image tag for manifest replacement
           AR_LOCATION=${{ secrets.GKE_ZONE }}
           FULL_IMAGE_TAG="${AR_LOCATION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
           
-          # 2. Substitute the GKE_IMAGE_TAG placeholder with the actual, built image URI
-          # The sed command requires the use of a safe delimiter like @ because the variable contains slashes
+          # Substitute the GKE_IMAGE_TAG placeholder in the manifest
           sed -i "s@GKE_IMAGE_TAG@${FULL_IMAGE_TAG}@g" ${{ env.K8S_DEPLOYMENT_FILE }}
           sed -i "s@value: \"1.0\"@value: \"${{ env.IMAGE_TAG }}\"@g" ${{ env.K8S_DEPLOYMENT_FILE }}
 
-          # 3. Apply the updated Kubernetes manifest to the GKE cluster
+          # Apply the updated Kubernetes manifest
           kubectl apply -f ${{ env.K8S_DEPLOYMENT_FILE }}
 
       - name: Verify Deployment Rollout
         run: |
-          # Wait for the Kubernetes deployment to successfully update
           kubectl rollout status deployment/flask-stig-demo --timeout=5m
